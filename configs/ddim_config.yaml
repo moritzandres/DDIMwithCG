@@ -1,0 +1,24 @@
+model_name: DDIM
+
+seed: 42
+
+split_dir: .\data\splits
+
+target_size: !<tag:yaml.org,2002:seq> [64,64]
+batch_size: 64
+
+checkpoint_dir: .\checkpoints
+pretrained_dir: .\pretrained
+diffusion_model: best_diffusion_model.ckpt
+classifier_model: best_classifier_model.ckpt
+
+lr: 2.5e-5
+num_epochs: 2000
+num_epochs_cls: 1000
+
+# classifier_lr: 2.5e-5
+# classifier_num_epochs: 1000
+classifier_im_size: [64, 64]
+
+L: 200  # noise-level
+s: 50   # gradient scale

@@ -1,0 +1,20 @@
+model_name: RA
+
+seed: 42
+
+split_dir: ./data/splits
+
+target_size: !<tag:yaml.org,2002:seq> [128,128]
+batch_size: 32
+cdim: 1
+zdim: 128
+channels: !<tag:yaml.org,2002:seq> [64, 128, 256, 512, 512]
+image_size: 128
+beta_kl: 1.0
+beta_rec: 0.5
+beta_neg: 128.0
+
+
+lr: 0.00005
+kl_weight: 1.0
+num_epochs: 100

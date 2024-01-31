@@ -1,0 +1,11 @@
+model_name: AE
+
+seed: 42
+
+split_dir: ./data/splits
+
+target_size: !<tag:yaml.org,2002:seq> [128,128]
+batch_size: 32
+
+lr: 0.001
+num_epochs: 100
