@@ -43,7 +43,7 @@ The training is done in the [train_classifier.ipynb](./train_classifier.ipynb).
 
 | DDIM | Classifier | Classifier (On Decathlon Dataset) |
 | --- | --- | --- |
-|![image](.\\logs\\my_logs_ddim\\metrics.png)|![image](.\\logs\\my_logs_classifier\\metrics.png)|![image](.\\logs\\my_logs_classifier_dec\\metrics.png)|
+|![image](./logs/my_logs_ddim/metrics.png)|![image](./logs/my_logs_classifier/metrics.png)|![image](./logs/my_logs_classifier_dec/metrics.png)|
 
 
 
@@ -63,7 +63,7 @@ To see all experiment results check-out the experiments folder
 
 <img src="./experiments/chain_gradients.png" alt="drawing" width="100%"/>
 
-### Video of Reconstruction
+### Animated Gifs of Reconstruction
 
 Noising Process | Denoising Process | Gradients during DP | Full Reconstruction
 | :---: | :---: | :---: | :---: |
