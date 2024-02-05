@@ -72,15 +72,17 @@ class DDIMwCG:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        d_model_path = os.path.join(config['checkpoint_dir'], config["diffusion_model"])
-        self.diffusion_model = DDIM.load_from_checkpoint(d_model_path)
-        # self.diffusion_model = get_diffusion_model(config, load_weights=True)
-        self.diffusion_model.to(self.device)
+        self.diffusion_model = DDIM(config)
+        weights_path = os.path.join(config['ddim_log_dir'], "weights.pth")
+        self.diffusion_model.load_state_dict(torch.load(weights_path))
+        self.diffusion_model = self.diffusion_model.to(self.device).eval()
+        self.diffusion_model = self.diffusion_model.diffusion_model
 
-        c_model_path = os.path.join(config['checkpoint_dir'], config["classifier_model"])
-        self.classifier = Classifier.load_from_checkpoint(c_model_path)
-        # self.classifier = get_classifier(config, load_weights=True)
-        self.classifier.to(self.device)
+        self.classifier = Classifier(config)
+        weights_path = os.path.join(config['classifier_log_dir'], "weights.pth")
+        self.classifier.load_state_dict(torch.load(weights_path))
+        self.classifier = self.classifier.to(self.device).eval()
+        self.classifier = self.classifier.classifier
 
         self.scheduler = DDIMScheduler(num_train_timesteps=1000)
         self.inferer = DiffusionInferer(self.scheduler)
@@ -101,18 +103,19 @@ class DDIMwCG:
         self.scheduler.set_timesteps(num_inference_steps=1000)
 
         print("\nnoising process...")
-        progress_bar = tqdm(range(self.L))  # go back and forth L timesteps
+        progress_bar = tqdm(range(self.L-1))  # go back and forth L timesteps
         for t in progress_bar:  # go through the noising process
             with autocast(enabled=False):
                 with torch.no_grad():
                     model_output = self.diffusion_model(rec, timesteps=torch.Tensor((t,)).to(rec.device))
             rec, _ = self.scheduler.reversed_step(model_output, t, rec)
+            rec = torch.clamp(rec, -1, 1)
 
         print("denoising process...")
         y = torch.tensor(0)  # define the desired class label
-        progress_bar = tqdm(range(self.L))  # go back and forth L timesteps
-        for i in progress_bar:  # go through the denoising process
-            t = self.L - i
+        progress_bar = tqdm(range(self.L-1,-1,-1))  # go back and forth L timesteps
+        for t in progress_bar:  # go through the denoising process
+            # t = self.L - i
             with autocast(enabled=True):
                 with torch.no_grad():
                     model_output = self.diffusion_model(
@@ -121,9 +124,9 @@ class DDIMwCG:
 
                 with torch.enable_grad():
                     x_in = rec.detach().requires_grad_(True)
-                    logits = self.classifier(x_in, timesteps=torch.Tensor((t,)).to(rec.device)).requires_grad_(True)
-                    log_probs = F.log_softmax(logits, dim=-1).requires_grad_(True)
-                    selected = log_probs[range(len(logits)), y.view(-1)].requires_grad_(True)
+                    logits = self.classifier(x_in, timesteps=torch.Tensor((t,)).to(rec.device))
+                    log_probs = F.log_softmax(logits, dim=-1)
+                    selected = log_probs[range(len(logits)), y.view(-1)]
 
                     # get gradient C(x_t) regarding x_t 
                     a = torch.autograd.grad(selected.sum(), x_in)[0]
@@ -133,6 +136,7 @@ class DDIMwCG:
                     )  # update the predicted noise epsilon with the gradient of the classifier
 
             rec, _ = self.scheduler.step(updated_noise, t, rec)
+            rec = torch.clamp(rec, -1, 1)
             torch.cuda.empty_cache()
 
         # anomaly detection
@@ -187,7 +191,7 @@ class DDIM(pl.LightningModule):
             # Generate random noise
             noise = torch.randn_like(images).to(self.device)
 
-            # Get model prediction
+            # Get model prediction (1) adds noise to image (2) predicts noise
             noise_pred = self.inferer(inputs=images, diffusion_model=self.diffusion_model, 
                                       noise=noise, timesteps=timesteps)
             loss = self.loss_fn(noise_pred.float(), noise.float())
@@ -196,6 +200,7 @@ class DDIM(pl.LightningModule):
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
+        self.log('loss', loss, prog_bar=True, on_epoch=True, on_step=False)
         return loss
 
     def validation_step(self, batch: Tensor, batch_idx):
@@ -264,7 +269,8 @@ class Classifier(pl.LightningModule):
 
             loss.backward()
             self.optimizer.step()
-            
+        
+        self.log('train_loss', loss, prog_bar=True, on_epoch=True, on_step=False)
         return loss
 
     def validation_step(self, batch: dict, batch_idx):
@@ -277,7 +283,8 @@ class Classifier(pl.LightningModule):
             with autocast(enabled=False):
                 pred = self(images, timesteps)
                 val_loss = self.loss_fn(pred, classes.long(), reduction="mean")
-
+        
+        self.log('val_loss', val_loss, prog_bar=True, on_epoch=True, on_step=False)
         return val_loss
 
     def configure_optimizers(self):

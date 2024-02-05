@@ -1,4 +1,5 @@
 import os
+import random
 from typing import List, Tuple
 
 import pandas as pd
@@ -7,6 +8,8 @@ from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
+
+random.seed(42)
 
 class TrainDataset(Dataset):
 
@@ -179,3 +182,127 @@ def get_all_test_dataloaders(split_dir: str, target_size: Tuple[int, int], batch
     ]
     return {pathology: get_test_dataloader(split_dir, pathology, target_size, batch_size)
             for pathology in pathologies}
+
+
+###  Data module for training binary classifier  ###
+
+class BinClassifierDataset(Dataset):
+
+    def __init__(self, data_normal: List[str], data_diseased: List[str], target_size=(64, 64)):
+        """
+        Loads images from data
+
+        @param data_normal:
+            paths to images for 
+        @param data_diseased:
+        @param: target_size: tuple (int, int), default: (64, 64)
+            the desired output size
+        """
+        super(BinClassifierDataset, self).__init__()
+        self.target_size = target_size
+        self.data = data_normal + data_diseased
+        self.labels = [0] * len(data_normal) + [1] * len(data_diseased)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        # Load image
+        img = Image.open(self.data[idx]).convert('L')
+        # Pad to square
+        img = transforms.Pad(((img.height - img.width) // 2, 0), fill=0)(img)
+        # Resize
+        img = img.resize(self.target_size, Image.BICUBIC)
+        # Convert to tensor
+        img = transforms.ToTensor()(img)
+
+        label = self.labels[idx]
+
+        return {
+            "image": img,
+            "slice_label": label
+        }
+
+
+class BinClassifierDataModule(pl.LightningDataModule):
+
+    def __init__(self, split_dir: str, target_size=(64, 64), batch_size: int = 32, skip_some_diseased=False):
+        """
+        Data module for training
+
+        @param split_dir: str
+            path to directory containing the split files
+        @param: target_size: tuple (int, int), default: (64, 64)
+            the desired output size
+        @param: batch_size: int, default: 32
+            batch size
+        @param: skip_some_diseased: bool, default: False
+            if True, the module will skip some diseased images to compasate for the fact that the same images are used for the evaluation
+        """
+        super(BinClassifierDataModule, self).__init__()
+        self.target_size = target_size
+        self.batch_size = batch_size
+
+        train_csv_ixi = os.path.join(split_dir, 'ixi_normal_train.csv')
+        train_csv_fastMRI = os.path.join(split_dir, 'normal_train.csv')
+        val_csv = os.path.join(split_dir, 'normal_val.csv')
+
+        # Load normal csv files
+        train_files_ixi = pd.read_csv(train_csv_ixi)['filename'].tolist()
+        train_files_fastMRI = pd.read_csv(train_csv_fastMRI)['filename'].tolist()
+        train_data_normal = train_files_ixi + train_files_fastMRI
+        val_data_normal = pd.read_csv(val_csv)['filename'].tolist()
+
+        # Load diseased csv files
+        data_diseased = get_diseased_data(split_dir)
+        val_data_diseased = data_diseased[:15]  # use 15 images for validation (same as normal)
+        train_data_diseased = data_diseased[15:]
+
+        if skip_some_diseased:
+            train_data_diseased = train_data_diseased[::2]
+
+        # balance train data ()
+        min_num = min(len(train_data_normal), len(train_data_diseased))
+        train_data_normal = train_data_diseased[:min_num]
+        train_data_diseased = train_data_diseased[:min_num]
+
+        self.train_data_normal = train_data_normal
+        self.train_data_diseased = train_data_diseased
+        self.val_data_normal = val_data_normal
+        self.val_data_diseased = val_data_diseased
+
+        # Logging
+        print(f"Using {len(self.train_data_normal)} normal images "
+              f"and {len(self.train_data_diseased)} images with pathologies for training. "
+              f"Using {len(val_data_normal)+len(val_data_diseased)} images for validation.")
+
+    def train_dataloader(self):
+        return DataLoader(BinClassifierDataset(self.train_data_normal, self.train_data_diseased, self.target_size),
+                          batch_size=self.batch_size,
+                          shuffle=True)
+
+    def val_dataloader(self):
+        return DataLoader(BinClassifierDataset(self.val_data_normal, self.val_data_diseased, self.target_size),
+                          batch_size=self.batch_size,
+                          shuffle=False)
+
+
+def get_diseased_data(split_dir: str, shuffle=True):
+    """ get all filenames of diseased images excluding normal and test images """
+
+    # list all csv files that do not end with _neg or _ann
+    # and skip the normal csv files
+    csv_files = [f for f in os.listdir(split_dir) if 
+                 f.endswith('.csv') and 
+                 not f.endswith('_neg.csv') and 
+                 not f.endswith('_ann.csv') and 
+                 not f.startswith('normal')]
+    # load all csv files
+    data = []
+    for csv_file in csv_files:
+        data += pd.read_csv(os.path.join(split_dir, csv_file))['filename'].tolist()
+    # remove duplicates
+    data = list(set(data))
+    if shuffle:
+        random.shuffle(data)
+    return data
