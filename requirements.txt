@@ -11,3 +11,5 @@ opencv-python
 plotly
 scikit-image
 nbformat
+monai[pillow, tqdm]
+monai-generative
