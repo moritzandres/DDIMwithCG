@@ -253,8 +253,6 @@ class Classifier(pl.LightningModule):
     def training_step(self, batch: dict, batch_idx):
         images = batch["image"]
         classes = batch["slice_label"]
-        # classes[classes==2]=0
-
         self.optimizer.zero_grad(set_to_none=True)
         timesteps = torch.randint(0, 1000, (len(images),)).to(self.device)
 
@@ -276,17 +274,17 @@ class Classifier(pl.LightningModule):
     def validation_step(self, batch: dict, batch_idx):
         images = batch["image"]
         classes = batch["slice_label"]
-        timesteps = torch.randint(0, 1, (len(images),), device=self.device)  
+        timesteps = torch.randint(0, 1, (len(images),), device=self.device)
         # check validation accuracy on the original images, i.e., do not add noise
 
         with torch.no_grad():
             with autocast(enabled=False):
                 pred = self(images, timesteps)
-                val_loss = self.loss_fn(pred, classes.long(), reduction="mean")
+                val_loss = self.loss_fn(pred, classes.long())
         
         self.log('val_loss', val_loss, prog_bar=True, on_epoch=True, on_step=False)
         return val_loss
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.config['lr'])
+        return torch.optim.Adam(self.parameters(), lr=self.config['lr_cls'])
 

@@ -200,23 +200,22 @@ class BinClassifierDataset(Dataset):
         """
         super(BinClassifierDataset, self).__init__()
         self.target_size = target_size
-        self.data = data_normal + data_diseased
-        self.labels = [0] * len(data_normal) + [1] * len(data_diseased)
+        self.data = [(x, 0) for x in data_normal] + [(x, 1) for x in data_diseased]
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
+        # get image and label
+        im_path, label = self.data[idx]
         # Load image
-        img = Image.open(self.data[idx]).convert('L')
+        img = Image.open(im_path).convert('L')
         # Pad to square
         img = transforms.Pad(((img.height - img.width) // 2, 0), fill=0)(img)
         # Resize
         img = img.resize(self.target_size, Image.BICUBIC)
         # Convert to tensor
         img = transforms.ToTensor()(img)
-
-        label = self.labels[idx]
 
         return {
             "image": img,
@@ -226,7 +225,7 @@ class BinClassifierDataset(Dataset):
 
 class BinClassifierDataModule(pl.LightningDataModule):
 
-    def __init__(self, split_dir: str, target_size=(64, 64), batch_size: int = 32, skip_some_diseased=False):
+    def __init__(self, split_dir: str, target_size=(64, 64), batch_size: int = 32):
         """
         Data module for training
 
@@ -236,8 +235,6 @@ class BinClassifierDataModule(pl.LightningDataModule):
             the desired output size
         @param: batch_size: int, default: 32
             batch size
-        @param: skip_some_diseased: bool, default: False
-            if True, the module will skip some diseased images to compasate for the fact that the same images are used for the evaluation
         """
         super(BinClassifierDataModule, self).__init__()
         self.target_size = target_size
@@ -258,12 +255,10 @@ class BinClassifierDataModule(pl.LightningDataModule):
         val_data_diseased = data_diseased[:15]  # use 15 images for validation (same as normal)
         train_data_diseased = data_diseased[15:]
 
-        if skip_some_diseased:
-            train_data_diseased = train_data_diseased[::2]
-
-        # balance train data ()
-        min_num = min(len(train_data_normal), len(train_data_diseased))
-        train_data_normal = train_data_diseased[:min_num]
+        # balance train data (one class may only be 3x larger than the other)
+        balance_factor = 3.0
+        min_num = int(balance_factor * min(len(train_data_normal), len(train_data_diseased)))
+        train_data_normal = train_data_normal[:min_num]
         train_data_diseased = train_data_diseased[:min_num]
 
         self.train_data_normal = train_data_normal
@@ -287,7 +282,7 @@ class BinClassifierDataModule(pl.LightningDataModule):
                           shuffle=False)
 
 
-def get_diseased_data(split_dir: str, shuffle=True):
+def get_diseased_data(split_dir: str, shuffle=True, skip_some=False):
     """ get all filenames of diseased images excluding normal and test images """
 
     # list all csv files that do not end with _neg or _ann
@@ -296,7 +291,7 @@ def get_diseased_data(split_dir: str, shuffle=True):
                  f.endswith('.csv') and 
                  not f.endswith('_neg.csv') and 
                  not f.endswith('_ann.csv') and 
-                 not f.startswith('normal')]
+                 not 'normal' in f]
     # load all csv files
     data = []
     for csv_file in csv_files:
@@ -305,4 +300,8 @@ def get_diseased_data(split_dir: str, shuffle=True):
     data = list(set(data))
     if shuffle:
         random.shuffle(data)
+    # skip some images
+    if skip_some:
+        data = data[::2]
+
     return data
