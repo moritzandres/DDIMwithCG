@@ -4,28 +4,25 @@ import torch
 import yaml
 import os
 from time import time
-from torch import Tensor
 import torch.nn.functional as F
 from monai.utils import set_determinism
 from torch.cuda.amp import autocast
 from tqdm import tqdm
-from generative.inferers import DiffusionInferer
-from generative.networks.nets.diffusion_model_unet import DiffusionModelEncoder, DiffusionModelUNet
-from generative.networks.schedulers.ddim import DDIMScheduler
 from PIL import Image
 import numpy as np
 from torchvision import transforms as tvt
-import imageio
 
-from model.ddim import DDIMwCG, DDIM, Classifier
+from model.ddim import DDIMwCG
+from model.ddim import get_diffusion_model, get_classifier
 
 set_determinism(42)
 
 
-img_dir = '.\\data\\fastMRI\\brain_mid_png'
-mask_dir = '.\\data\\fastMRI\\brain_mid_anno_pos_png'
-neg_mask_dir = '.\\data\\fastMRI\\brain_mid_anno_neg_png'
+img_dir = './data/fastMRI/brain_mid_png'
+mask_dir = './data/fastMRI/brain_mid_anno_pos_png'
+neg_mask_dir = './data/fastMRI/brain_mid_anno_neg_png'
 
+# sample files for different pathologies
 data = {
     "ABSENT_SEPTUM": {
         "image": "file_brain_AXT1_202_6000392.png",
@@ -67,31 +64,68 @@ with open('./configs/ddim_config.yaml', 'r') as f:
 pl.seed_everything(config['seed'])
 
 
+def evaluate_ddim(config, L=1000):
+    """ evaluate the image generation ability of the DDIM model (without classifier-guidance) """
+
+    model = DDIMwCG(config)
+    ddim = model.diffusion_model
+    scheduler = model.scheduler
+    n = L // 10  # number of images to save (10)
+
+    # denoising process
+    imgs = []
+    model_outs = []
+    x = torch.randn((1, 1, 64, 64)).to(model.device)
+    with torch.no_grad():
+        progress_bar = tqdm(range(L-1,-1,-1))  # go back and forth L timesteps
+        for t in progress_bar:  # go through the denoising process
+            with autocast(enabled=True):
+                model_output = ddim(
+                    x, timesteps=torch.Tensor((t,)).to(x.device)
+                )
+                x, _ = scheduler.step(model_output, t, x)
+                x = torch.clamp(x, -1, 1)  # clamp 
+            torch.cuda.empty_cache()
+
+            if t % n == 0:
+                imgs.append((t, x.cpu().numpy().squeeze()))
+                model_outs.append((t, model_output.cpu().numpy().squeeze()))
+    
+    # save chain 
+    chain = torch.cat([torch.from_numpy(img) for t, img in imgs], dim=-1)
+    chain = np.clip(chain.cpu().numpy(), 0, 1) * 255
+    image = Image.fromarray(chain.astype(np.uint8), mode='L')
+    image.save("experiments/pure_ddim_denoising.png")
+
+
 def compare_diseases(config, imgs, gt_imgs):
 
     model = DDIMwCG(config)  # change to your model
+    L, s = model.L, model.scale
     ano_maps = model.detect_anomaly(torch.cat(imgs, dim=0))
 
-    fig, axs = plt.subplots(len(imgs), 4, figsize=(5,6), dpi=300)
+    fig, axs = plt.subplots(len(imgs), 4, figsize=(4*1.5, len(imgs)*1.5), dpi=300)
     for ax in axs.flatten():
         ax.xaxis.set_visible(False) 
         ax.tick_params(left=False, labelleft=False)
 
-    # for i in range(len(imgs)):
-    #     # axs[i][0].set_ylabel(list(data.keys())[i], fontsize=4, rotation=0, labelpad=60)
-    #     axs[i][0].imshow(imgs[i].numpy().squeeze(), cmap='gray')
-    #     axs[i][1].imshow(ano_maps['reconstruction'][i].cpu().numpy().squeeze(), cmap='gray')
-    #     axs[i][2].imshow(ano_maps['anomaly_map'][i].cpu().numpy().squeeze())
-    #     axs[i][3].imshow(gt_imgs[i], cmap='gray')
-    # axs[0][0].set_title('Input', fontsize=8)
-    # axs[0][1].set_title('Reconstr.', fontsize=8)
-    # axs[0][2].set_title('Ano.-Map', fontsize=8)
-    # axs[0][3].set_title('GT Mask', fontsize=8)
+    for i in range(len(imgs)):
+        patho_name = list(data.keys())[i]
+        axs[i][0].set_ylabel(f'{patho_name}\n(L={L},s={s})', fontsize=6, rotation=0, labelpad=40)
+        axs[i][0].imshow(imgs[i].numpy().squeeze(), cmap='gray')
+        axs[i][1].imshow(ano_maps['reconstruction'][i].cpu().numpy().squeeze(), cmap='gray')
+        axs[i][2].imshow(ano_maps['anomaly_map'][i].cpu().numpy().squeeze(), cmap='jet')
+        axs[i][3].imshow(gt_imgs[i], cmap='gray')
+    axs[0][0].set_title('Input', fontsize=8)
+    axs[0][1].set_title('Reconstr.', fontsize=8)
+    axs[0][2].set_title('Ano.-Map', fontsize=8)
+    axs[0][3].set_title('GT Mask', fontsize=8)
 
-    # plt.tight_layout()
-    # plt.savefig(f'experiments/compare_pathologies.png')
-    # plt.close()
+    plt.tight_layout()
+    plt.savefig(f'experiments/compare_pathologies.png')
+    plt.close()
 
+    # # save separate images
     # os.makedirs('experiments/pathologies', exist_ok=True)
     # for i in range(len(imgs)):
     #     plt.imshow(ano_maps['anomaly_map'][i].cpu().numpy().squeeze(), cmap='gray')
@@ -99,53 +133,51 @@ def compare_diseases(config, imgs, gt_imgs):
     #     plt.tight_layout()
     #     plt.savefig(f'experiments/pathologies/{list(data.keys())[i]}_anomap.png')
     #     plt.close()
-
     #     plt.imshow(ano_maps['reconstruction'][i].cpu().numpy().squeeze(), cmap='gray')
     #     plt.axis('off')
     #     plt.tight_layout()
     #     plt.savefig(f'experiments/pathologies/{list(data.keys())[i]}_reconstr.png')
     #     plt.close()
-        
-    # save combined reconstructions as single image
-    im_arr = np.concatenate([ano_maps['reconstruction'][i].cpu().numpy().squeeze() for i in range(len(imgs))], axis=1)
 
 
-
-def compare_L(config, img, gt_img, s=50):
+def compare_L(config, imgs, gt_imgs, s=50):
 
     config['s'] = s
-    Ls = [10, 50, 100, 200, 400, 900]
+    Ls = [100, 200, 400, 800, 1000]
 
     res = {}
     for L in Ls:
         config['L'] = L
         model = DDIMwCG(config)
-        res[L] = model.detect_anomaly(img)
+        res[L] = model.detect_anomaly(torch.cat(imgs, dim=0))
 
-    fig, axs = plt.subplots(len(Ls), 4, dpi=300)
-    for ax in axs.flat:
-        ax.xaxis.set_visible(False) 
-        ax.tick_params(left=False, labelleft=False)
+    os.makedirs('experiments/compare_L', exist_ok=True)
 
-    max_val = max([res[L]['anomaly_score'].cpu().numpy()[0] for L in Ls])
-    print([res[L]['anomaly_score'].cpu().numpy()[0] for L in Ls], max_val)
+    for j, (img, gt_img) in enumerate(zip(imgs, gt_imgs)):
 
-    for i, (L, ano_map) in enumerate(res.items()):
-        axs[i][0].set_ylabel(f"L: {L}", fontsize=4, rotation=0, labelpad=20)
-        axs[i][0].imshow(img.numpy().squeeze(), cmap='gray')
-        axs[i][1].imshow(ano_map['reconstruction'][0].cpu().numpy().squeeze(), cmap='gray')
-        axs[i][2].imshow(ano_map['anomaly_map'][0].cpu().numpy().squeeze())
-        axs[i][3].imshow(gt_img, cmap='gray')
-    axs[0][0].set_title('Input', fontsize=8)
-    axs[0][1].set_title('Reconstr.', fontsize=8)
-    axs[0][2].set_title('Ano.-Map', fontsize=8)
-    axs[0][3].set_title('GT Mask', fontsize=8)
+        fig, axs = plt.subplots(len(Ls), 4, figsize=(4*1.5, len(Ls)*1.5), dpi=300)
+        for ax in axs.flat:
+            ax.xaxis.set_visible(False) 
+            ax.tick_params(left=False, labelleft=False)
 
-    plt.tight_layout()
-    plt.savefig(f'experiments/compare_L.png')
+        for i, (L, ano_map) in enumerate(res.items()):
+            axs[i][0].set_ylabel(f"L={L}\n(s={s})", fontsize=8, rotation=0, labelpad=20)
+            axs[i][0].imshow(img.numpy().squeeze(), cmap='gray')
+            axs[i][1].imshow(ano_map['reconstruction'][j].cpu().numpy().squeeze(), cmap='gray')
+            axs[i][2].imshow(ano_map['anomaly_map'][j].cpu().numpy().squeeze(), cmap='jet')
+            axs[i][3].imshow(gt_img, cmap='gray')
+        axs[0][0].set_title('Input', fontsize=8)
+        axs[0][1].set_title('Reconstr.', fontsize=8)
+        axs[0][2].set_title('Ano.-Map', fontsize=8)
+        axs[0][3].set_title('GT Mask', fontsize=8)
+
+        plt.tight_layout()
+        patho_name = list(data.keys())[j]
+        plt.savefig(f'experiments/compare_L/{patho_name}.png')
+        plt.close()
 
 
-def compare_s(config, img, gt_img, L=400):
+def compare_s(config, imgs, gt_imgs, L=400):
 
     config['L'] = L
     Ss = [10, 50, 100, 200, 400]
@@ -154,143 +186,213 @@ def compare_s(config, img, gt_img, L=400):
     for s in Ss:
         config['s'] = s
         model = DDIMwCG(config)
-        res[s] = model.detect_anomaly(img)
+        res[s] = model.detect_anomaly(torch.cat(imgs, dim=0))
 
-    fig, axs = plt.subplots(len(Ss), 4, dpi=300)
-    for ax in axs.flat:
+    os.makedirs('experiments/compare_s', exist_ok=True)
+
+    for j, (img, gt_img) in enumerate(zip(imgs, gt_imgs)):
+
+        fig, axs = plt.subplots(len(Ss), 4, figsize=(4*1.5, len(Ss)*1.5), dpi=300)
+        for ax in axs.flat:
+            ax.xaxis.set_visible(False) 
+            ax.tick_params(left=False, labelleft=False)
+
+        for i, (s, ano_map) in enumerate(res.items()):
+            axs[i][0].set_ylabel(f"s={s}\n(L={L})", fontsize=8, rotation=0, labelpad=20)
+            axs[i][0].imshow(img.numpy().squeeze(), cmap='gray')
+            axs[i][1].imshow(ano_map['reconstruction'][j].cpu().numpy().squeeze(), cmap='gray')
+            axs[i][2].imshow(ano_map['anomaly_map'][j].cpu().numpy().squeeze(), cmap='jet')
+            axs[i][3].imshow(gt_img, cmap='gray')
+        axs[0][0].set_title('Input', fontsize=8)
+        axs[0][1].set_title('Reconstr.', fontsize=8)
+        axs[0][2].set_title('Ano.-Map', fontsize=8)
+        axs[0][3].set_title('GT Mask', fontsize=8)
+
+        plt.tight_layout()
+        patho_name = list(data.keys())[j]
+        plt.savefig(f'experiments/compare_s/{patho_name}.png')
+        plt.close()
+
+
+def visualize_flow(config, img, L=400, s=100):
+
+    model = DDIMwCG(config)
+    ddim = model.diffusion_model
+    classifier = model.classifier
+    scheduler = model.scheduler
+    scale = s
+    n = L // 10  # number of images to save (10)
+
+    noising_imgs = []
+    noising_outs = []
+    cls_grads = []
+    combined_outs = []
+    denoising_imgs = []
+    denoising_outs = []
+
+    # noising process
+    x = img.to(model.device)
+    progress_bar = tqdm(range(L-1))
+    for t in progress_bar:  # go through the noising process
+        with autocast(enabled=False):
+            with torch.no_grad():
+                model_output = ddim(x, timesteps=torch.Tensor((t,)).to(x.device))
+        x, _ = scheduler.reversed_step(model_output, t, x)
+        x = torch.clamp(x, -1, 1)
+
+        noising_imgs.append(x.cpu().numpy().squeeze())
+        noising_outs.append(model_output.cpu().numpy().squeeze())
+
+    # denoising process
+    y = torch.tensor(0)  # define the desired class label
+    with torch.no_grad():
+        progress_bar = tqdm(range(L-1,-1,-1))  # go back and forth L timesteps
+        for t in progress_bar:  # go through the denoising process
+            with autocast(enabled=True):
+                with torch.no_grad():
+                    model_output = ddim(
+                        x, timesteps=torch.Tensor((t,)).to(x.device)
+                    ).detach()  # this is supposed to be epsilon
+
+                with torch.enable_grad():
+                    x = x.detach().requires_grad_(True)
+                    logits = classifier(x, timesteps=torch.Tensor((t,)).to(x.device))
+                    log_probs = F.log_softmax(logits, dim=-1)
+                    selected = log_probs[range(len(logits)), y.view(-1)]
+
+                    # get gradient C(x_t) regarding x_t 
+                    a = torch.autograd.grad(selected.sum(), x)[0]
+                    alpha_prod_t = scheduler.alphas_cumprod[t]
+                    updated_noise = (
+                        model_output - (1 - alpha_prod_t).sqrt() * scale * a
+                    )  # update the predicted noise epsilon with the gradient of the classifier
+
+            x, _ = scheduler.step(updated_noise, t, x)
+            x = torch.clamp(x, -1, 1)  # clamp
+            torch.cuda.empty_cache()
+
+            denoising_imgs.append(x.cpu().numpy().squeeze())
+            denoising_outs.append(model_output.cpu().numpy().squeeze())
+            cls_grads.append(a.cpu().numpy().squeeze())
+            combined_outs.append(updated_noise.cpu().numpy().squeeze())
+        
+
+    noise_idxs = np.unique(np.linspace(0, len(noising_imgs)-1, num=10, dtype=int))
+    denoise_idxs = np.unique(np.linspace(0, len(denoising_imgs)-1, num=10, dtype=int))
+    full_idxs = np.unique(np.linspace(0, len(noising_imgs)+len(denoising_imgs)-1, num=10, dtype=int))
+    
+    # noising reconstruction
+    images = np.array(noising_imgs)
+    images = np.clip(images, 0, 1) * 255
+    imgs = [Image.fromarray(img) for img in images.astype(np.uint8)]
+    imgs[0].save("experiments/video_noising_imgs.gif", save_all=True, append_images=imgs[1:], duration=2000 // len(imgs), loop=0)
+    noise_chain = torch.cat([torch.from_numpy(img) for img in images[noise_idxs]], dim=-1).numpy()
+    Image.fromarray(noise_chain.astype(np.uint8)).save("experiments/chain_noise.png")
+
+    # gradients
+    images = np.absolute(np.array(cls_grads))
+    images = (images - images.min()) / (images.max() - images.min()) * 255
+    imgs = [Image.fromarray(grad) for grad in images.astype(np.uint8)]
+    imgs[0].save("experiments/video_gradients.gif", save_all=True, append_images=imgs[1:], duration=2000 // len(imgs), loop=0)
+    grad_chain = torch.cat([torch.from_numpy(grad) for grad in images[denoise_idxs]], dim=-1).numpy()
+    Image.fromarray(grad_chain.astype(np.uint8)).save("experiments/chain_gradients.png")
+
+    # denoising reconstruction
+    images = np.array(denoising_imgs)
+    images = np.clip(images, 0, 1) * 255
+    imgs = [Image.fromarray(img) for img in images.astype(np.uint8)]
+    imgs[0].save("experiments/video_denoising_imgs.gif", save_all=True, append_images=imgs[1:], duration=2000 // len(imgs), loop=0)
+    rec_chain = torch.cat([torch.from_numpy(img) for img in images[denoise_idxs]], dim=-1).numpy()
+    Image.fromarray(rec_chain.astype(np.uint8)).save("experiments/chain_reconstruction.png")
+
+    # full chain (noising + denoising)
+    images = np.array(noising_imgs + denoising_imgs)
+    images = np.clip(images, 0, 1) * 255
+    imgs = [Image.fromarray(img) for img in images.astype(np.uint8)]
+    imgs[0].save("experiments/video_full_chain.gif", save_all=True, append_images=imgs[1:], duration=4000 // len(imgs), loop=0)
+    full_chain = torch.cat([torch.from_numpy(img) for img in images[full_idxs]], dim=-1).numpy()
+    full_chain = Image.fromarray(full_chain.astype(np.uint8)).save("experiments/chain_full.png")
+
+
+def compare_train_dataset(config, imgs, gt_imgs):
+    """ compare the performance of the model trained with Decathlon dataset 
+        + the model had more data for training
+        - the data distribution is different
+    """
+
+    # load model trained with Decathlon dataset
+    model = DDIMwCG(config)
+    ddim = get_diffusion_model(config, load_weights=True).to(model.device)
+    classifier = get_classifier(config, load_weights=True).to(model.device)
+    model.diffusion_model = ddim
+    model.classifier = classifier
+    model.eval()
+
+    ano_maps = model.detect_anomaly(torch.cat(imgs, dim=0))
+
+    fig, axs = plt.subplots(len(imgs), 4, figsize=(5*1.5, len(imgs)*1.5), dpi=300)
+    for ax in axs.flatten():
         ax.xaxis.set_visible(False) 
         ax.tick_params(left=False, labelleft=False)
 
-    max_val = max([res[s]['anomaly_score'].cpu().numpy()[0] for s in Ss])
-    print([res[s]['anomaly_score'].cpu().numpy()[0] for s in Ss], max_val)
-
-    for i, (s, ano_map) in enumerate(res.items()):
-        axs[i][0].set_ylabel(f"s: {s}", fontsize=4, rotation=0, labelpad=20)
-        axs[i][0].imshow(img.numpy().squeeze(), cmap='gray')
-        axs[i][1].imshow(ano_map['reconstruction'][0].cpu().numpy().squeeze(), cmap='gray')
-        axs[i][2].imshow(ano_map['anomaly_map'][0].cpu().numpy().squeeze())
-        axs[i][3].imshow(gt_img, cmap='gray')
+    for i in range(len(imgs)):
+        patho_name = list(data.keys())[i]
+        axs[i][0].set_ylabel(f"{patho_name}\nL={model.L}\ns={model.scale}", fontsize=8, rotation=0, labelpad=60)
+        axs[i][0].imshow(imgs[i].numpy().squeeze(), cmap='gray')
+        axs[i][1].imshow(ano_maps['reconstruction'][i].cpu().numpy().squeeze(), cmap='gray')
+        axs[i][2].imshow(ano_maps['anomaly_map'][i].cpu().numpy().squeeze(), cmap='jet')
+        axs[i][3].imshow(gt_imgs[i], cmap='gray')
     axs[0][0].set_title('Input', fontsize=8)
     axs[0][1].set_title('Reconstr.', fontsize=8)
     axs[0][2].set_title('Ano.-Map', fontsize=8)
     axs[0][3].set_title('GT Mask', fontsize=8)
 
     plt.tight_layout()
-    plt.savefig(f'experiments/compare_s.png')
+    plt.savefig(f'experiments/decathlon_pathologies.png')
+    plt.close()
 
 
-def visualize_gradients(config, img):
+def compare_time(config, imgs):
+    """ analyze the inference time for the anomaly detection on different noise levels and cpu/ gpu"""
 
-    class DDIMwCG_COPY:
+    # try different noise levels L
+    Ls = [1000, 800, 600, 400, 200, 100]
 
-        """ DDIM model with classifier-guidance
-        !COPY OF DDIMwCG CLASS FROM ddim.py
-        """
-
-        def __init__(self, config):
-
-            super().__init__()
-            self.config = config
-
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            d_model_path = os.path.join(config['checkpoint_dir'], config["diffusion_model"])
-            self.diffusion_model = DDIM.load_from_checkpoint(d_model_path)
-            # self.diffusion_model = get_diffusion_model(config, load_weights=True)
-            self.diffusion_model.to(self.device)
-
-            c_model_path = os.path.join(config['checkpoint_dir'], config["classifier_model"])
-            self.classifier = Classifier.load_from_checkpoint(c_model_path)
-            # self.classifier = get_classifier(config, load_weights=True)
-            self.classifier.to(self.device)
-
-            self.scheduler = DDIMScheduler(num_train_timesteps=1000)
-            self.inferer = DiffusionInferer(self.scheduler)
-
-            self.L = self.config['L']      # noise level L
-            self.scale = self.config['s']  # gradient-scale s
-
-        def eval(self):
-            self.diffusion_model.eval()
-            self.classifier.eval()
-
-        def detect_anomaly(self, x: Tensor):
-            """ detect anomaly using diffusion model with classifier-guidance """
-            t_start = time()
-
-            x = x.to(self.device)
-            rec = x.clone()
-            self.scheduler.set_timesteps(num_inference_steps=1000)
-
-            print("\nnoising process...")
-            progress_bar = tqdm(range(self.L))  # go back and forth L timesteps
-            for t in progress_bar:  # go through the noising process
-                with autocast(enabled=False):
-                    with torch.no_grad():
-                        model_output = self.diffusion_model(rec, timesteps=torch.Tensor((t,)).to(rec.device))
-                rec, _ = self.scheduler.reversed_step(model_output, t, rec)
-
-            print("denoising process...")
-            y = torch.tensor(0)  # define the desired class label
-            grads = []
-            progress_bar = tqdm(range(self.L))  # go back and forth L timesteps
-            for i in progress_bar:  # go through the denoising process
-                t = self.L - i
-                with autocast(enabled=True):
-                    with torch.no_grad():
-                        model_output = self.diffusion_model(
-                            rec, timesteps=torch.Tensor((t,)).to(rec.device)
-                        ).detach()  # this is supposed to be epsilon
-
-                    with torch.enable_grad():
-                        x_in = rec.detach().requires_grad_(True)
-                        logits = self.classifier(x_in, timesteps=torch.Tensor((t,)).to(rec.device))
-                        log_probs = F.log_softmax(logits, dim=-1)
-                        selected = log_probs[range(len(logits)), y.view(-1)]
-
-                        # get gradient C(x_t) regarding x_t 
-                        a = torch.autograd.grad(selected.sum(), x_in)[0]
-                        alpha_prod_t = self.scheduler.alphas_cumprod[t]
-                        updated_noise = (
-                            model_output - (1 - alpha_prod_t).sqrt() * self.scale * a
-                        )  # update the predicted noise epsilon with the gradient of the classifier
-                        grads.append(a.detach().cpu().numpy().squeeze())
-
-                rec, _ = self.scheduler.step(updated_noise, t, rec)
-                torch.cuda.empty_cache()
-
-            # anomaly detection
-            anomaly_map = torch.abs(x - rec)
-            anomaly_score = torch.sum(anomaly_map, dim=(1, 2, 3))
-            print(f'total inference-time: {time() - t_start:.2f}sec\n')
-            return {
-                'reconstruction': rec,
-                'anomaly_map': anomaly_map,
-                'anomaly_score': anomaly_score,
-                'gradients': grads,
-            }
+    # on CPU
+    results = {'device': [], 'L': [], 'time': []}
+    for L in Ls:
+        config['L'] = L
+        model = DDIMwCG(config)
+        model.device = torch.device('cpu')
+        model.classifier = model.classifier.to(model.device)
+        model.diffusion_model = model.diffusion_model.to(model.device)
+        for img in imgs:
+            start = time()
+            model.detect_anomaly(img)
+            results['device'].append('cpu')
+            results['time'].append(time() - start)
+            results['L'].append(L)
     
-    gradients = DDIMwCG_COPY(config).detect_anomaly(img)["gradients"]
+    # on GPU
+    for L in Ls:
+        config['L'] = L
+        model = DDIMwCG(config)
+        for img in imgs:
+            start = time()
+            model.detect_anomaly(img)
+            results['device'].append('gpu')
+            results['time'].append(time() - start)
+            results['L'].append(L)
+    
+    # create two seaborn plots with variance
+    import seaborn as sns
+    import pandas as pd
+    df = pd.DataFrame(results)
 
-    g_dir = os.path.join('experiments', 'gradients')
-    os.makedirs(g_dir, exist_ok=True)
-
-    print('saving images of gradients...')
-    for i, grad in enumerate(tqdm(gradients)):
-        plt.imshow(grad)
-        plt.axis('off')
-        plt.title(f'gradient {i}')
-        plt.colorbar()
-        plt.tight_layout()
-        plt.savefig(os.path.join(g_dir, f'gradient_{i+1:04d}.png'))
-        plt.close()
-
-    gif_path = os.path.join('experiments', 'gradients.gif')
-    with imageio.get_writer(gif_path, mode='I') as writer:
-        for filename in sorted(os.listdir(g_dir)):
-            fpath = os.path.join(g_dir, filename)
-            image = imageio.imread(fpath)
-            writer.append_data(image)
+    sns.lineplot(data=df, x='L', y='time', hue='device')
+    plt.title("CPU time")
+    plt.savefig('experiments/inference_time.png')
+    plt.close()
 
 
 if __name__ == '__main__':
@@ -314,7 +416,10 @@ if __name__ == '__main__':
 
 
     ### run experiments ###
+    # evaluate_ddim(config, imgs[0])
     compare_diseases(config, imgs, gt_imgs)
-    # compare_L(config, imgs[0], gt_imgs[0], s=50)
-    # compare_s(config, imgs[0], gt_imgs[0], L=200)
-    # visualize_gradients(config, imgs[0])
+    # compare_s(config, imgs, gt_imgs, L=400)
+    # compare_L(config, imgs, gt_imgs, s=50)
+    # visualize_flow(config, imgs[1])
+    # compare_train_dataset(config, imgs, gt_imgs)
+    # compare_time(config, imgs)
