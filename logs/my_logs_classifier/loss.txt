@@ -1,0 +1,3 @@
+There must be a bug in the code. I can't explain the exploding validation loss.
+It almost looks like the binary validation labels got swapped since the CE loss is so high 
+but I already tried swapping them back and the results were the same.
