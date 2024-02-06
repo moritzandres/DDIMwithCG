@@ -180,7 +180,8 @@ def compare_L(config, imgs, gt_imgs, s=50):
 def compare_s(config, imgs, gt_imgs, L=400):
 
     config['L'] = L
-    Ss = [10, 50, 100, 200, 400]
+    # Ss = [10, 50, 100, 200, 400]
+    Ss = [0.3, 1, 3, 9, 27]
 
     res = {}
     for s in Ss:
@@ -413,13 +414,14 @@ if __name__ == '__main__':
         gt_img = gt_img.resize(config["target_size"], Image.BICUBIC)  # Resize
         gt_img = np.array(gt_img)
         gt_imgs.append(gt_img)
-
+    
+    os.makedirs('experiments', exist_ok=True)
 
     ### run experiments ###
-    # evaluate_ddim(config, imgs[0])
-    compare_diseases(config, imgs, gt_imgs)
-    # compare_s(config, imgs, gt_imgs, L=400)
-    # compare_L(config, imgs, gt_imgs, s=50)
-    # visualize_flow(config, imgs[1])
+    # evaluate_ddim(config, L=1000)
+    # compare_s(config, imgs, gt_imgs, L=300)
+    # compare_L(config, imgs, gt_imgs, s=3)
+    # compare_diseases(config, imgs, gt_imgs)
+    visualize_flow(config, imgs[2], L=200, s=3)
     # compare_train_dataset(config, imgs, gt_imgs)
     # compare_time(config, imgs)

@@ -13,7 +13,7 @@ classifier_log_dir: .\logs\my_logs_classifier
 classifier_dec_log_dir: .\logs\my_logs_classifier_dec  # trained with decathlon dataset
 
 lr: 2.5e-5
-lr_cls: 7.5e-5
+lr_cls: 2.5e-5
 num_epochs: 1000
 num_epochs_cls: 1000
 early_stopping: 50
@@ -23,4 +23,4 @@ early_stopping: 50
 classifier_im_size: [64, 64]
 
 L: 200  # noise-level
-s: 50   # gradient scale
+s: 3    # gradient scale

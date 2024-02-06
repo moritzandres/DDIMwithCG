@@ -33,19 +33,17 @@ To train the DDIM with Classifier GUidance we need to train the DDIM and the Cla
 First, we train the classifier to distinguish healthy from pathological scans.
 We feed noisy images to the classifier during training since we are going to use the classifier gradients on the noisy reconstruction in the denoising process of the DDIM to shift the reconstruction towards heathy images.
 We also trained the classifier on the Decathlon dataset because \
-The training is done in the [train_classifier.ipynb](./train_classifier.ipynb).
+The training is done in [train_classifier.ipynb](./train_classifier.ipynb).
 
 ### Train DDIM
 
-
+We train the diffusion model as a DDPM by estimating the noise added to the image at each step of the diffusion process. Adding the noise follows the diffusion process described in the paper. The training is done in [main.ipynb](./main.ipynb).
 
 ### Training Curves
 
 | DDIM | Classifier | Classifier (On Decathlon Dataset) |
 | --- | --- | --- |
-|![image](./logs/my_logs_ddim/metrics.png)|![image](./logs/my_logs_classifier/metrics.png)|![image](./logs/my_logs_classifier_dec/metrics.png)|
-
-
+|![image](./logs/my_logs_ddim/metrics.png)|![image](./logs/my_logs_classifier/loss.png)|![image](./logs/my_logs_classifier_dec/metrics.png)|
 
 ## Evaluation
 
@@ -75,8 +73,10 @@ Noising Process | Denoising Process | Gradients during DP | Full Reconstruction
 
 ## Conclusion
 
-Looking at Anomaly maps we can clearly see that the model is not able to find and remove the anomalies in the images. This is due to the fact that the classifier is not able to learn the distribution of the healthy images. This is probably due to the fact that the classifier is trained on a relatively small dataset and the Decathlon dataset which is also reflected in the training curves of the classifier.
+Looking at Anomaly maps, we can see that the model is not able to find and remove the anomalies in the images. This is due to the fact that the classifier is not able to learn to distinguish the healthy from the pathological images. This is probably due to the fact that the classifier is trained on a relatively small dataset which is also reflected in the training curves of the classifier. However, the classifier performs better on the Decathlon dataset even though it is even smaller (388 training samples vs 1200 in our data). This could be because the differences between the classes are more pronounced in the Decathlon dataset but further investigation is needed to confirm this.
 
-Looking at the image reconstruction of the DDIM without the classifier guidance we can see that the model is able to generate images that look like the input images. Due to the fact that the gradients of the classifier during denoising do not vanish as the image looks more like a healthy image, the classifier keeps adding noise to the image which results in a noisy reconstruction.
+Looking at the image reconstruction of the DDIM without the classifier guidance, we can see that the model is able to generate images that look like the input images. Due to the fact that the gradients of the classifier during denoising do not vanish as the image looks more like a healthy image, the classifier keeps adding noise to the image which results in a noisy reconstruction.
 
 The best way to improve the model would be to use a more performant classifier that for example was trained on a larger dataset or with the use of data augmentation.
+Another idea is to remove the classifier guidance from the last few steps of the denoising process to avoid the noisy reconstruction.
+This assumes however that the anomalies cannot removed by the DDIM within these few steps. This might hold true for large anomalies but not for small ones.
